@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chat Widget - Fixed & Working</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 40px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            min-height: 100vh;
+        }
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+        }
+        h1 {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .info-box {
+            background: rgba(255,255,255,0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .status {
+            padding: 15px;
+            border-radius: 8px;
+            margin: 10px 0;
+        }
+        .status.success {
+            background: rgba(76, 175, 80, 0.3);
+            border-left: 4px solid #4CAF50;
+        }
+        .test-steps {
+            background: rgba(255,255,255,0.95);
+            color: #333;
+            border-radius: 8px;
+            padding: 20px;
+        }
+        .test-steps ol {
+            margin: 15px 0;
+            padding-left: 25px;
+        }
+        .test-steps li {
+            margin: 10px 0;
+            line-height: 1.6;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>✅ Chat Widget Fixed!</h1>
+        
+        <div class="info-box">
+            <h2>🎯 What Was Fixed</h2>
+            <div class="status success">
+                ✅ Fixed empty message display issue
+            </div>
+            <div class="status success">
+                ✅ Fixed Unicode/emoji rendering
+            </div>
+            <div class="status success">
+                ✅ Added safety checks for undefined messages
+            </div>
+            <div class="status success">
+                ✅ Product bubbles now display correctly
+            </div>
+        </div>
+        
+        <div class="test-steps">
+            <h2>📋 Test It Now</h2>
+            <ol>
+                <li>Click the chat icon (bottom-right corner)</li>
+                <li>Say "Hi" - you'll see welcome message + 6 product bubbles</li>
+                <li>Click a product (e.g., "Mobile App Development")</li>
+                <li>Answer the questions to complete lead capture</li>
+                <li>Ask general questions after that</li>
+            </ol>
+            <p style="text-align: center; margin-top: 30px; font-size: 20px;">
+                <strong>👉 Start chatting now!</strong>
+            </p>
+        </div>
+    </div>
+
+    <!-- Load Chat Widget -->
+    <link rel="stylesheet" href="/components/chat-widget/chat-widget.css">
+    <script>
+        window.chatWidgetConfig = {
+            apiUrl: 'http://localhost:8000',
+            position: 'bottom-right'
+        };
+    </script>
+    <script src="/components/chat-widget/chat-widget.js"></script>
+</body>
+</html>

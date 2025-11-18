@@ -28,6 +28,35 @@ class ChatWidget {
         this.injectStyles();
         this.createWidget();
         this.attachEventListeners();
+        // Verify backend after widget is created
+        setTimeout(() => this.verifyBackendConnection(), 100);
+    }
+    
+    async verifyBackendConnection() {
+        try {
+            const response = await fetch(`${this.config.apiUrl}/`, {
+                method: 'GET',
+                headers: { 'Content-Type': 'application/json' }
+            });
+            if (response.ok) {
+                console.log('✓ Chat backend connected successfully');
+                // If we had a cached error session, clear it and reset
+                if (this.messages) {
+                    const hasError = Array.from(this.messages.children).some(el => 
+                        el.textContent.includes('encountered an error') || 
+                        el.textContent.includes('Unable to connect')
+                    );
+                    if (hasError) {
+                        console.log('Clearing cached error session...');
+                        localStorage.removeItem('chat_session_id');
+                        this.sessionId = this.createNewSession();
+                        this.messages.innerHTML = this.createWelcomeMessage();
+                    }
+                }
+            }
+        } catch (error) {
+            console.warn('Chat backend not available:', error);
+        }
     }
     
     injectStyles() {
@@ -201,6 +230,11 @@ class ChatWidget {
     async sendMessage(message) {
         if (!message.trim() || this.isTyping) return;
         
+        console.log('=== CHAT WIDGET DEBUG ===');
+        console.log('API URL:', this.config.apiUrl);
+        console.log('Session ID:', this.sessionId);
+        console.log('Message:', message);
+        
         // Clear welcome message if present
         const welcome = this.messages.querySelector('.chat-welcome');
         if (welcome) welcome.remove();
@@ -228,11 +262,16 @@ class ChatWidget {
                 })
             });
             
+            console.log('Chat API response status:', response.status);
+            
             if (!response.ok) {
+                const errorText = await response.text();
+                console.error('Chat API error response:', errorText);
                 throw new Error(`HTTP error! status: ${response.status}`);
             }
             
             const data = await response.json();
+            console.log('Chat API success:', data);
             
             // Update session ID
             this.sessionId = data.session_id;
@@ -241,26 +280,93 @@ class ChatWidget {
             // Hide typing indicator
             this.hideTypingIndicator();
             
-            // Add bot response
-            this.addMessage(data.reply, 'bot', data.sources);
+            // Add bot response (using 'text' instead of 'reply')
+            const botText = data.text || data.reply || "I'm here to help!";  // Backwards compatibility
+            console.log('Bot text to display:', botText);
+            
+            if (botText && botText.trim()) {
+                this.addMessage(botText, 'bot', data.sources);
+            } else {
+                console.error('Empty bot response received:', data);
+                this.addMessage("Sorry, I didn't get a proper response. Please try again.", 'bot');
+            }
+            
+            // Add quick reply bubbles if provided
+            if (data.quick_replies && data.quick_replies.length > 0) {
+                console.log('Adding quick replies:', data.quick_replies);
+                this.addQuickReplies(data.quick_replies);
+            }
             
         } catch (error) {
             console.error('Error sending message:', error);
+            console.error('Error details:', {
+                message: error.message,
+                stack: error.stack,
+                apiUrl: this.config.apiUrl,
+                sessionId: this.sessionId
+            });
             this.hideTypingIndicator();
-            this.addMessage(
-                'Sorry, I encountered an error. Please try again later.',
-                'bot'
-            );
+            
+            // Check if backend is reachable
+            const isBackendDown = error.message.includes('Failed to fetch') || error.message.includes('NetworkError');
+            
+            // If we got a 500 error, it might be a session issue - try clearing session
+            if (error.message.includes('500')) {
+                console.warn('Got 500 error, clearing session and retrying...');
+                localStorage.removeItem('chat_session_id');
+                this.sessionId = this.createNewSession();
+            }
+            
+            const errorMessage = isBackendDown 
+                ? 'Unable to connect to the chat server. Please check if the backend is running on port 8000.'
+                : 'Sorry, I encountered an error processing your request. Please try again.';
+            
+            this.addMessage(errorMessage, 'bot');
+            
+            // If it's a network error, suggest clearing the session
+            if (isBackendDown) {
+                setTimeout(() => {
+                    const retryDiv = document.createElement('div');
+                    retryDiv.className = 'chat-message bot';
+                    retryDiv.innerHTML = `
+                        <div class="message-content">
+                            <button onclick="localStorage.removeItem('chat_session_id'); location.reload();" 
+                                    style="padding: 8px 16px; background: #274DA1; color: white; border: none; border-radius: 6px; cursor: pointer;">
+                                Retry Connection
+                            </button>
+                        </div>
+                    `;
+                    this.messages.appendChild(retryDiv);
+                    this.messages.scrollTop = this.messages.scrollHeight;
+                }, 500);
+            }
         }
     }
     
     addMessage(text, role, sources = []) {
+        // Safety check for empty or undefined text
+        if (!text || typeof text !== 'string') {
+            console.error('Invalid message text:', text);
+            text = 'Message could not be displayed';
+        }
+        
+        // Trim whitespace
+        text = text.trim();
+        if (!text) {
+            console.error('Empty message after trimming');
+            text = 'Empty message received';
+        }
+        
+        console.log(`Adding ${role} message:`, text.substring(0, 50) + '...');
+        
         const messageDiv = document.createElement('div');
         messageDiv.className = `chat-message ${role}`;
         
         const bubble = document.createElement('div');
         bubble.className = 'message-bubble';
-        bubble.textContent = text;
+        
+        // Use innerHTML instead of textContent to properly handle Unicode/emojis
+        bubble.innerHTML = this.escapeHtml(text).replace(/\n/g, '<br>');
         
         messageDiv.appendChild(bubble);
         
@@ -325,6 +431,36 @@ class ChatWidget {
         messageDiv.appendChild(timestamp);
         
         this.messages.appendChild(messageDiv);
+        this.scrollToBottom();
+    }
+    
+    addQuickReplies(quickReplies) {
+        // Remove any existing quick replies
+        const existing = this.messages.querySelector('.quick-replies-container');
+        if (existing) existing.remove();
+        
+        // Create quick replies container
+        const container = document.createElement('div');
+        container.className = 'quick-replies-container';
+        
+        quickReplies.forEach(reply => {
+            const button = document.createElement('button');
+            button.className = 'quick-reply-btn';
+            button.textContent = reply.label;
+            button.dataset.id = reply.id;
+            button.dataset.label = reply.label;
+            
+            button.addEventListener('click', () => {
+                // Remove quick replies after selection
+                container.remove();
+                // Send the selected option as a message
+                this.sendMessage(reply.label);
+            });
+            
+            container.appendChild(button);
+        });
+        
+        this.messages.appendChild(container);
         this.scrollToBottom();
     }
     
@@ -422,9 +558,18 @@ class ChatWidget {
 
 // Auto-initialize if config is provided
 if (window.chatWidgetConfig) {
-    document.addEventListener('DOMContentLoaded', () => {
-        new ChatWidget(window.chatWidgetConfig);
-    });
+    // Check if DOM is already loaded
+    if (document.readyState === 'loading') {
+        // DOM is still loading, wait for it
+        document.addEventListener('DOMContentLoaded', () => {
+            window.chatWidget = new ChatWidget(window.chatWidgetConfig);
+            console.log('Chat widget initialized on DOMContentLoaded');
+        });
+    } else {
+        // DOM is already loaded, initialize immediately
+        window.chatWidget = new ChatWidget(window.chatWidgetConfig);
+        console.log('Chat widget initialized immediately (DOM already loaded)');
+    }
 }
 
 // Export for manual initialization

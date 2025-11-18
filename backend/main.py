@@ -1,6 +1,6 @@
 """
 FastAPI backend for Absolute App Labs chatbot
-Powered by Google Gemini 2.0 Flash-Lite
+Powered by Google Gemini 2.0 Flash
 """
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,11 +18,13 @@ from slowapi.errors import RateLimitExceeded
 from config import API_HOST, API_PORT, CORS_ORIGINS, RATE_LIMIT_PER_MINUTE
 from database import init_db, get_db, ChatSession, ChatMessage
 from llm import generate_response
+from conversation_state import ConversationState, ConversationStage
+from lead_collector import LeadCollector
 
 # Initialize FastAPI app
 app = FastAPI(
     title="Absolute App Labs Chat API",
-    description="AI-powered chat widget backend using Gemini 2.0 Flash-Lite",
+    description="AI-powered chat widget backend using Google Gemini 2.0 Flash",
     version="1.0.0"
 )
 
@@ -48,15 +50,23 @@ async def startup_event():
     print("Database initialized")
     print(f"Server starting on {API_HOST}:{API_PORT}")
 
+@app.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    return {"status": "healthy", "service": "absolute-app-labs-chatbot"}
+
 # Request/Response models
 class ChatRequest(BaseModel):
     session_id: Optional[str] = None
     message: str
 
 class ChatResponse(BaseModel):
-    reply: str
-    sources: List[Dict[str, str]]
+    text: str  # Changed from 'reply' to 'text' for consistency
+    sources: List[Dict[str, str]] = []
     session_id: str
+    quick_replies: List[Dict[str, str]] = []  # New: for product bubbles
+    slots: Dict = {}  # New: conversation state
+    actions: List[Dict] = []  # New: for HubSpot actions
 
 class SessionInfo(BaseModel):
     session_id: str
@@ -70,7 +80,7 @@ async def root():
     return {
         "status": "ok",
         "service": "Absolute App Labs Chat API",
-        "model": "Google Gemini 2.0 Flash-Lite"
+        "model": "Google Gemini 2.0 Flash"
     }
 
 # Chat endpoint
@@ -82,34 +92,57 @@ async def chat(
     db: Session = Depends(get_db)
 ):
     """
-    Process a chat message and return AI response
+    Process a chat message with lead collection and return structured AI response
     
     Args:
         chat_request: Chat request with message and optional session_id
         db: Database session
     
     Returns:
-        ChatResponse with reply, sources, and session_id
+        ChatResponse with text, sources, quick_replies, slots, actions, and session_id
     """
     try:
         # Get or create session
         session_id = chat_request.session_id
+        session = None
+        
         if not session_id:
             session_id = str(uuid.uuid4())
             # Create new session
-            new_session = ChatSession(
+            session = ChatSession(
                 id=session_id,
-                ip_address=get_remote_address(request)
+                ip_address=get_remote_address(request),
+                conversation_state="{}"  # Empty state for new session
             )
-            db.add(new_session)
+            db.add(session)
             db.commit()
         else:
-            # Verify session exists
+            # Verify session exists, create if not found
             session = db.query(ChatSession).filter(ChatSession.id == session_id).first()
             if not session:
-                raise HTTPException(status_code=404, detail="Session not found")
+                # Session doesn't exist (maybe expired or DB was reset)
+                # Create a new session with the provided ID
+                session = ChatSession(
+                    id=session_id,
+                    ip_address=get_remote_address(request),
+                    conversation_state="{}"
+                )
+                db.add(session)
+                db.commit()
         
-        # Get chat history
+        # Load conversation state
+        state_data = json.loads(session.conversation_state or "{}")
+        conv_state = ConversationState(state_data)
+        
+        # Initialize lead collector
+        lead_collector = LeadCollector(conv_state)
+        
+        # Process message through lead collector first
+        lead_response, quick_replies, actions = lead_collector.process_message(
+            chat_request.message
+        )
+        
+        # Get chat history for context
         messages = db.query(ChatMessage).filter(
             ChatMessage.session_id == session_id
         ).order_by(ChatMessage.timestamp).all()
@@ -122,12 +155,18 @@ async def chat(
             for msg in messages
         ]
         
-        # Generate response using Gemini 2.0 Flash-Lite
-        response_text, sources = await generate_response(
-            chat_request.message,
-            chat_history,
-            enable_search=True
-        )
+        sources = []
+        
+        # If lead collector returned a response, use it
+        if lead_response:
+            response_text = lead_response
+        else:
+            # Otherwise, use Gemini for general Q&A
+            response_text, sources = await generate_response(
+                chat_request.message,
+                chat_history,
+                enable_search=True
+            )
         
         # Save user message
         user_message = ChatMessage(
@@ -146,16 +185,19 @@ async def chat(
         )
         db.add(assistant_message)
         
-        # Update session timestamp
-        session = db.query(ChatSession).filter(ChatSession.id == session_id).first()
+        # Update session with new conversation state
+        session.conversation_state = json.dumps(conv_state.to_dict())
         session.updated_at = datetime.utcnow()
         
         db.commit()
         
         return ChatResponse(
-            reply=response_text,
+            text=response_text,
             sources=sources,
-            session_id=session_id
+            session_id=session_id,
+            quick_replies=quick_replies,
+            slots=conv_state.to_dict(),
+            actions=actions
         )
     
     except Exception as e:
